@@ -5,8 +5,9 @@ TARGET = miniredis
 
 SRC = src/main.cpp src/server.cpp
 
-$(TARGET):
+$(TARGET): $(SRC) src/server.h
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET)
 
+.PHONY: clean
 clean:
 	rm -f $(TARGET)
