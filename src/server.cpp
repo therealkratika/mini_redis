@@ -4,9 +4,42 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+
+namespace {
+
+bool send_all(int socket_fd, const char* data, std::size_t length) {
+#ifdef MSG_NOSIGNAL
+    constexpr int send_flags = MSG_NOSIGNAL;
+#else
+    constexpr int send_flags = 0;
+#endif
+
+    std::size_t sent = 0;
+    while (sent < length) {
+        const ssize_t result = send(socket_fd, data + sent, length - sent,
+                                    send_flags);
+        if (result == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("send");
+            return false;
+        }
+        if (result == 0) {
+            std::cerr << "send: connection closed before response was sent"
+                      << std::endl;
+            return false;
+        }
+        sent += static_cast<std::size_t>(result);
+    }
+    return true;
+}
+
+}  // namespace
 
 Server::Server(int port) : port(port) {}
 
@@ -57,28 +90,63 @@ bool Server::start() {
     }
     close(server_fd);
 
-    constexpr char message[] = "Hello from MiniRedis!\r\n";
-    std::size_t sent = 0;
-    while (sent < sizeof(message) - 1) {
-        const ssize_t result = send(client_fd, message + sent,
-                                    sizeof(message) - 1 - sent, 0);
-        if (result == -1) {
+#if defined(SO_NOSIGPIPE) && !defined(MSG_NOSIGNAL)
+    int no_sigpipe = 1;
+    if (setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE,
+                   &no_sigpipe, sizeof(no_sigpipe)) == -1) {
+        perror("setsockopt");
+        close(client_fd);
+        return false;
+    }
+#endif
+
+    constexpr char greeting[] = "Hello from MiniRedis!\r\n";
+    if (!send_all(client_fd, greeting, sizeof(greeting) - 1)) {
+        close(client_fd);
+        return false;
+    }
+
+    constexpr char response[] = "+OK\r\n";
+    char buffer[1024];
+    std::string command;
+    bool success = true;
+    while (true) {
+        const ssize_t received = recv(client_fd, buffer, sizeof(buffer), 0);
+        if (received == -1) {
             if (errno == EINTR) {
                 continue;
             }
-            perror("send");
-            close(client_fd);
-            return false;
+            perror("recv");
+            success = false;
+            break;
         }
-        if (result == 0) {
-            std::cerr << "send: connection closed before message was sent"
-                      << std::endl;
-            close(client_fd);
-            return false;
+        if (received == 0) {
+            std::cout << "Client disconnected" << std::endl;
+            break;
         }
-        sent += static_cast<std::size_t>(result);
+
+        for (ssize_t i = 0; i < received; ++i) {
+            if (buffer[i] != '\n') {
+                command += buffer[i];
+                continue;
+            }
+
+            if (!command.empty() && command.back() == '\r') {
+                command.pop_back();
+            }
+            std::cout << "Received command: " << command << std::endl;
+            command.clear();
+
+            if (!send_all(client_fd, response, sizeof(response) - 1)) {
+                success = false;
+                break;
+            }
+        }
+        if (!success) {
+            break;
+        }
     }
 
     close(client_fd);
-    return true;
+    return success;
 }
