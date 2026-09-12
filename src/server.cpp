@@ -1,10 +1,12 @@
 #include "server.h"
+#include "resp_parser.h"
 
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <vector>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -108,7 +110,7 @@ bool Server::start() {
 
     constexpr char response[] = "+OK\r\n";
     char buffer[1024];
-    std::string command;
+    std::string pending;
     bool success = true;
     while (true) {
         const ssize_t received = recv(client_fd, buffer, sizeof(buffer), 0);
@@ -125,18 +127,29 @@ bool Server::start() {
             break;
         }
 
-        for (ssize_t i = 0; i < received; ++i) {
-            if (buffer[i] != '\n') {
-                command += buffer[i];
-                continue;
+        pending.append(buffer, static_cast<std::size_t>(received));
+        while (!pending.empty()) {
+            std::vector<std::string> arguments;
+            std::size_t consumed = 0;
+            const RespParseResult result =
+                parse_resp_command(pending, arguments, consumed);
+            if (result == RespParseResult::Incomplete) {
+                break;
+            }
+            if (result == RespParseResult::Invalid) {
+                constexpr char error[] = "-ERR invalid RESP request\r\n";
+                send_all(client_fd, error, sizeof(error) - 1);
+                success = false;
+                break;
             }
 
-            if (!command.empty() && command.back() == '\r') {
-                command.pop_back();
+            std::cout << "Received command:";
+            for (const std::string& argument : arguments) {
+                std::cout << ' ' << argument;
             }
-            std::cout << "Received command: " << command << std::endl;
-            command.clear();
+            std::cout << std::endl;
 
+            pending.erase(0, consumed);
             if (!send_all(client_fd, response, sizeof(response) - 1)) {
                 success = false;
                 break;
