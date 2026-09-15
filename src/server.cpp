@@ -1,4 +1,5 @@
 #include "server.h"
+#include "command_handler.h"
 #include "resp_parser.h"
 
 #include <cerrno>
@@ -108,9 +109,9 @@ bool Server::start() {
         return false;
     }
 
-    constexpr char response[] = "+OK\r\n";
     char buffer[1024];
     std::string pending;
+    CommandHandler command_handler;
     bool success = true;
     while (true) {
         const ssize_t received = recv(client_fd, buffer, sizeof(buffer), 0);
@@ -150,7 +151,8 @@ bool Server::start() {
             std::cout << std::endl;
 
             pending.erase(0, consumed);
-            if (!send_all(client_fd, response, sizeof(response) - 1)) {
+            const std::string response = command_handler.handle(arguments);
+            if (!send_all(client_fd, response.data(), response.size())) {
                 success = false;
                 break;
             }
