@@ -50,7 +50,7 @@ std::string CommandHandler::handle(
         if (arguments.size() != 3) {
             return wrong_argument_count(arguments[0]);
         }
-        values[arguments[1]] = arguments[2];
+        storage.set(arguments[1], arguments[2]);
         return "+OK\r\n";
     }
 
@@ -58,8 +58,8 @@ std::string CommandHandler::handle(
         if (arguments.size() != 2) {
             return wrong_argument_count(arguments[0]);
         }
-        const auto value = values.find(arguments[1]);
-        return value == values.end() ? "$-1\r\n" : bulk_string(value->second);
+        const auto value = storage.get(arguments[1]);
+        return value ? bulk_string(*value) : "$-1\r\n";
     }
 
     if (command == "DEL") {
@@ -68,7 +68,7 @@ std::string CommandHandler::handle(
         }
         std::size_t deleted = 0;
         for (std::size_t i = 1; i < arguments.size(); ++i) {
-            deleted += values.erase(arguments[i]);
+            deleted += storage.del(arguments[i]);
         }
         return ":" + std::to_string(deleted) + "\r\n";
     }
