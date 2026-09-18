@@ -6,7 +6,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <vector>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -42,9 +45,79 @@ bool send_all(int socket_fd, const char* data, std::size_t length) {
     return true;
 }
 
+void handle_client(int client_fd,
+                   const std::shared_ptr<KeyValueStore>& storage) {
+#if defined(SO_NOSIGPIPE) && !defined(MSG_NOSIGNAL)
+    int no_sigpipe = 1;
+    if (setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE,
+                   &no_sigpipe, sizeof(no_sigpipe)) == -1) {
+        perror("setsockopt");
+        close(client_fd);
+        return;
+    }
+#endif
+
+    constexpr char greeting[] = "Hello from MiniRedis!\r\n";
+    if (!send_all(client_fd, greeting, sizeof(greeting) - 1)) {
+        close(client_fd);
+        return;
+    }
+
+    char buffer[1024];
+    std::string pending;
+    CommandHandler command_handler(*storage);
+    while (true) {
+        const ssize_t received = recv(client_fd, buffer, sizeof(buffer), 0);
+        if (received == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("recv");
+            break;
+        }
+        if (received == 0) {
+            std::cout << "Client disconnected" << std::endl;
+            break;
+        }
+
+        pending.append(buffer, static_cast<std::size_t>(received));
+        while (!pending.empty()) {
+            std::vector<std::string> arguments;
+            std::size_t consumed = 0;
+            const RespParseResult result =
+                parse_resp_command(pending, arguments, consumed);
+            if (result == RespParseResult::Incomplete) {
+                break;
+            }
+            if (result == RespParseResult::Invalid) {
+                constexpr char error[] = "-ERR invalid RESP request\r\n";
+                send_all(client_fd, error, sizeof(error) - 1);
+                close(client_fd);
+                return;
+            }
+
+            std::cout << "Received command:";
+            for (const std::string& argument : arguments) {
+                std::cout << ' ' << argument;
+            }
+            std::cout << std::endl;
+
+            pending.erase(0, consumed);
+            const std::string response = command_handler.handle(arguments);
+            if (!send_all(client_fd, response.data(), response.size())) {
+                close(client_fd);
+                return;
+            }
+        }
+    }
+
+    close(client_fd);
+}
+
 }  // namespace
 
-Server::Server(int port) : port(port) {}
+Server::Server(int port)
+    : port(port), storage(std::make_shared<KeyValueStore>()) {}
 
 bool Server::start() {
     const int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -73,7 +146,7 @@ bool Server::start() {
         return false;
     }
 
-    if (listen(server_fd, 1) == -1) {
+    if (listen(server_fd, SOMAXCONN) == -1) {
         perror("listen");
         close(server_fd);
         return false;
@@ -81,87 +154,24 @@ bool Server::start() {
 
     std::cout << "MiniRedis listening on port " << port << std::endl;
 
-    int client_fd;
-    do {
-        client_fd = accept(server_fd, nullptr, nullptr);
-    } while (client_fd == -1 && errno == EINTR);
-
-    if (client_fd == -1) {
-        perror("accept");
-        close(server_fd);
-        return false;
-    }
-    close(server_fd);
-
-#if defined(SO_NOSIGPIPE) && !defined(MSG_NOSIGNAL)
-    int no_sigpipe = 1;
-    if (setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE,
-                   &no_sigpipe, sizeof(no_sigpipe)) == -1) {
-        perror("setsockopt");
-        close(client_fd);
-        return false;
-    }
-#endif
-
-    constexpr char greeting[] = "Hello from MiniRedis!\r\n";
-    if (!send_all(client_fd, greeting, sizeof(greeting) - 1)) {
-        close(client_fd);
-        return false;
-    }
-
-    char buffer[1024];
-    std::string pending;
-    CommandHandler command_handler;
-    bool success = true;
     while (true) {
-        const ssize_t received = recv(client_fd, buffer, sizeof(buffer), 0);
-        if (received == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            perror("recv");
-            success = false;
-            break;
-        }
-        if (received == 0) {
-            std::cout << "Client disconnected" << std::endl;
-            break;
+        int client_fd;
+        do {
+            client_fd = accept(server_fd, nullptr, nullptr);
+        } while (client_fd == -1 && errno == EINTR);
+
+        if (client_fd == -1) {
+            perror("accept");
+            close(server_fd);
+            return false;
         }
 
-        pending.append(buffer, static_cast<std::size_t>(received));
-        while (!pending.empty()) {
-            std::vector<std::string> arguments;
-            std::size_t consumed = 0;
-            const RespParseResult result =
-                parse_resp_command(pending, arguments, consumed);
-            if (result == RespParseResult::Incomplete) {
-                break;
-            }
-            if (result == RespParseResult::Invalid) {
-                constexpr char error[] = "-ERR invalid RESP request\r\n";
-                send_all(client_fd, error, sizeof(error) - 1);
-                success = false;
-                break;
-            }
-
-            std::cout << "Received command:";
-            for (const std::string& argument : arguments) {
-                std::cout << ' ' << argument;
-            }
-            std::cout << std::endl;
-
-            pending.erase(0, consumed);
-            const std::string response = command_handler.handle(arguments);
-            if (!send_all(client_fd, response.data(), response.size())) {
-                success = false;
-                break;
-            }
-        }
-        if (!success) {
-            break;
+        try {
+            std::thread(handle_client, client_fd, storage).detach();
+        } catch (const std::system_error& error) {
+            std::cerr << "Failed to start client thread: "
+                      << error.what() << std::endl;
+            close(client_fd);
         }
     }
-
-    close(client_fd);
-    return success;
 }

@@ -2,6 +2,7 @@
 #define KEY_VALUE_STORE_H
 
 #include <optional>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -15,6 +16,7 @@ public:
 
 private:
     std::unordered_map<std::string, std::string> values;
+    mutable std::mutex mutex;
 };
 
 #endif

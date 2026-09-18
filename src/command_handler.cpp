@@ -29,6 +29,8 @@ std::string bulk_string(const std::string& value) {
 
 }  // namespace
 
+CommandHandler::CommandHandler(KeyValueStore& storage) : storage(storage) {}
+
 std::string CommandHandler::handle(
     const std::vector<std::string>& arguments) {
     if (arguments.empty()) {

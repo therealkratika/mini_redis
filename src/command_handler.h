@@ -8,10 +8,11 @@
 
 class CommandHandler {
 public:
+    explicit CommandHandler(KeyValueStore& storage);
     std::string handle(const std::vector<std::string>& arguments);
 
 private:
-    KeyValueStore storage;
+    KeyValueStore& storage;
 };
 
 #endif
