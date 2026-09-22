@@ -1,4 +1,5 @@
 #include "server.h"
+#include "append_only_log.h"
 #include "command_handler.h"
 #include "resp_parser.h"
 
@@ -46,7 +47,9 @@ bool send_all(int socket_fd, const char* data, std::size_t length) {
 }
 
 void handle_client(int client_fd,
-                   const std::shared_ptr<KeyValueStore>& storage) {
+                   const std::shared_ptr<KeyValueStore>& storage,
+                   const std::shared_ptr<AppendOnlyLog>& persistence,
+                   const std::shared_ptr<std::mutex>& mutation_mutex) {
 #if defined(SO_NOSIGPIPE) && !defined(MSG_NOSIGNAL)
     int no_sigpipe = 1;
     if (setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE,
@@ -65,7 +68,7 @@ void handle_client(int client_fd,
 
     char buffer[1024];
     std::string pending;
-    CommandHandler command_handler(*storage);
+    CommandHandler command_handler(*storage, *persistence, *mutation_mutex);
     while (true) {
         const ssize_t received = recv(client_fd, buffer, sizeof(buffer), 0);
         if (received == -1) {
@@ -117,9 +120,15 @@ void handle_client(int client_fd,
 }  // namespace
 
 Server::Server(int port)
-    : port(port), storage(std::make_shared<KeyValueStore>()) {}
+    : port(port), storage(std::make_shared<KeyValueStore>()),
+      persistence(std::make_shared<AppendOnlyLog>()),
+      mutation_mutex(std::make_shared<std::mutex>()) {}
 
 bool Server::start() {
+    if (!persistence->replay(*storage)) {
+        return false;
+    }
+
     const int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1) {
         perror("socket");
@@ -167,7 +176,8 @@ bool Server::start() {
         }
 
         try {
-            std::thread(handle_client, client_fd, storage).detach();
+            std::thread(handle_client, client_fd, storage, persistence,
+                        mutation_mutex).detach();
         } catch (const std::system_error& error) {
             std::cerr << "Failed to start client thread: "
                       << error.what() << std::endl;

@@ -14,6 +14,8 @@ public:
     std::optional<std::string> get(const std::string& key);
     bool del(const std::string& key);
     bool exists(const std::string& key);
+    bool expire_at(const std::string& key,
+                   std::chrono::system_clock::time_point expires_at);
     void clear();
 
 private:

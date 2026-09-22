@@ -13,6 +13,7 @@ enum class RespParseResult {
 
 RespParseResult parse_resp_command(const std::string& input,
                                    std::vector<std::string>& arguments,
-                                   std::size_t& consumed);
+                                   std::size_t& consumed,
+                                   std::size_t offset = 0);
 
 #endif

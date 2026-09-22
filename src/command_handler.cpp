@@ -1,7 +1,10 @@
 #include "command_handler.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
+#include <chrono>
+#include <cstdint>
 
 namespace {
 
@@ -27,9 +30,24 @@ std::string bulk_string(const std::string& value) {
     return "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
 }
 
+std::string integer_reply(std::int64_t value) {
+    return ":" + std::to_string(value) + "\r\n";
+}
+
+bool parse_integer(const std::string& text, std::int64_t& value) {
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    const auto result = std::from_chars(begin, end, value);
+    return begin != end && result.ec == std::errc{} && result.ptr == end;
+}
+
 }  // namespace
 
-CommandHandler::CommandHandler(KeyValueStore& storage) : storage(storage) {}
+CommandHandler::CommandHandler(KeyValueStore& storage,
+                               AppendOnlyLog& persistence,
+                               std::mutex& mutation_mutex)
+    : storage(storage), persistence(persistence),
+      mutation_mutex(mutation_mutex) {}
 
 std::string CommandHandler::handle(
     const std::vector<std::string>& arguments) {
@@ -52,6 +70,10 @@ std::string CommandHandler::handle(
         if (arguments.size() != 3) {
             return wrong_argument_count(arguments[0]);
         }
+        std::lock_guard<std::mutex> lock(mutation_mutex);
+        if (!persistence.append({"SET", arguments[1], arguments[2]})) {
+            return "-ERR persistence failure\r\n";
+        }
         storage.set(arguments[1], arguments[2]);
         return "+OK\r\n";
     }
@@ -68,11 +90,54 @@ std::string CommandHandler::handle(
         if (arguments.size() < 2) {
             return wrong_argument_count(arguments[0]);
         }
+        std::lock_guard<std::mutex> lock(mutation_mutex);
+        std::vector<std::string> logged_arguments{"DEL"};
+        logged_arguments.insert(logged_arguments.end(), arguments.begin() + 1,
+                                arguments.end());
+        if (!persistence.append(logged_arguments)) {
+            return "-ERR persistence failure\r\n";
+        }
         std::size_t deleted = 0;
         for (std::size_t i = 1; i < arguments.size(); ++i) {
             deleted += storage.del(arguments[i]);
         }
-        return ":" + std::to_string(deleted) + "\r\n";
+        return integer_reply(static_cast<std::int64_t>(deleted));
+    }
+
+    if (command == "EXPIRE") {
+        if (arguments.size() != 3) {
+            return wrong_argument_count(arguments[0]);
+        }
+
+        std::int64_t seconds = 0;
+        if (!parse_integer(arguments[2], seconds)) {
+            return "-ERR value is not an integer or out of range\r\n";
+        }
+
+        std::lock_guard<std::mutex> lock(mutation_mutex);
+        if (!storage.exists(arguments[1])) {
+            return integer_reply(0);
+        }
+
+        const auto now = std::chrono::system_clock::now();
+        const auto maximum_seconds =
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::time_point::max() - now).count();
+        if (seconds > maximum_seconds) {
+            return "-ERR value is not an integer or out of range\r\n";
+        }
+        const auto expiry = seconds <= 0
+            ? now
+            : now + std::chrono::seconds(seconds);
+        const auto expiry_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                expiry.time_since_epoch()).count();
+        if (!persistence.append(
+                {"EXPIREAT", arguments[1], std::to_string(expiry_ms)})) {
+            return "-ERR persistence failure\r\n";
+        }
+        storage.expire_at(arguments[1], expiry);
+        return integer_reply(1);
     }
 
     return "-ERR unknown command\r\n";

@@ -31,16 +31,17 @@ RespParseResult parse_length(const std::string& input, std::size_t& position,
 
 RespParseResult parse_resp_command(const std::string& input,
                                    std::vector<std::string>& arguments,
-                                   std::size_t& consumed) {
+                                   std::size_t& consumed,
+                                   std::size_t offset) {
     consumed = 0;
-    if (input.empty()) {
+    if (offset >= input.size()) {
         return RespParseResult::Incomplete;
     }
-    if (input[0] != '*') {
+    if (input[offset] != '*') {
         return RespParseResult::Invalid;
     }
 
-    std::size_t position = 1;
+    std::size_t position = offset + 1;
     std::size_t argument_count = 0;
     RespParseResult result = parse_length(input, position, argument_count);
     if (result != RespParseResult::Complete) {
@@ -77,6 +78,6 @@ RespParseResult parse_resp_command(const std::string& input,
     }
 
     arguments = std::move(parsed_arguments);
-    consumed = position;
+    consumed = position - offset;
     return RespParseResult::Complete;
 }
