@@ -1,10 +1,11 @@
 #include "server.h"
 #include "append_only_log.h"
+#include "client_connection.h"
 #include "command_handler.h"
+#include "pub_sub.h"
 #include "resp_parser.h"
 
 #include <cerrno>
-#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <memory>
@@ -18,59 +19,36 @@
 
 namespace {
 
-bool send_all(int socket_fd, const char* data, std::size_t length) {
-#ifdef MSG_NOSIGNAL
-    constexpr int send_flags = MSG_NOSIGNAL;
-#else
-    constexpr int send_flags = 0;
-#endif
-
-    std::size_t sent = 0;
-    while (sent < length) {
-        const ssize_t result = send(socket_fd, data + sent, length - sent,
-                                    send_flags);
-        if (result == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            perror("send");
-            return false;
-        }
-        if (result == 0) {
-            std::cerr << "send: connection closed before response was sent"
-                      << std::endl;
-            return false;
-        }
-        sent += static_cast<std::size_t>(result);
-    }
-    return true;
-}
-
-void handle_client(int client_fd,
+void handle_client(const std::shared_ptr<ClientConnection>& client,
                    const std::shared_ptr<KeyValueStore>& storage,
                    const std::shared_ptr<AppendOnlyLog>& persistence,
-                   const std::shared_ptr<std::mutex>& mutation_mutex) {
+                   const std::shared_ptr<std::mutex>& mutation_mutex,
+                   const std::shared_ptr<PubSub>& pub_sub) {
 #if defined(SO_NOSIGPIPE) && !defined(MSG_NOSIGNAL)
     int no_sigpipe = 1;
-    if (setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE,
+    if (setsockopt(client->socket_fd(), SOL_SOCKET, SO_NOSIGPIPE,
                    &no_sigpipe, sizeof(no_sigpipe)) == -1) {
         perror("setsockopt");
-        close(client_fd);
+        pub_sub->remove_client(client);
+        client->close();
         return;
     }
 #endif
 
     constexpr char greeting[] = "Hello from MiniRedis!\r\n";
-    if (!send_all(client_fd, greeting, sizeof(greeting) - 1)) {
-        close(client_fd);
+    if (!client->send(greeting)) {
+        pub_sub->remove_client(client);
+        client->close();
         return;
     }
 
     char buffer[1024];
     std::string pending;
-    CommandHandler command_handler(*storage, *persistence, *mutation_mutex);
+    CommandHandler command_handler(*storage, *persistence, *mutation_mutex,
+                                   *pub_sub, client);
     while (true) {
-        const ssize_t received = recv(client_fd, buffer, sizeof(buffer), 0);
+        const ssize_t received =
+            recv(client->socket_fd(), buffer, sizeof(buffer), 0);
         if (received == -1) {
             if (errno == EINTR) {
                 continue;
@@ -84,6 +62,7 @@ void handle_client(int client_fd,
         }
 
         pending.append(buffer, static_cast<std::size_t>(received));
+        bool close_connection = false;
         while (!pending.empty()) {
             std::vector<std::string> arguments;
             std::size_t consumed = 0;
@@ -94,9 +73,9 @@ void handle_client(int client_fd,
             }
             if (result == RespParseResult::Invalid) {
                 constexpr char error[] = "-ERR invalid RESP request\r\n";
-                send_all(client_fd, error, sizeof(error) - 1);
-                close(client_fd);
-                return;
+                client->send(error);
+                close_connection = true;
+                break;
             }
 
             std::cout << "Received command:";
@@ -107,14 +86,18 @@ void handle_client(int client_fd,
 
             pending.erase(0, consumed);
             const std::string response = command_handler.handle(arguments);
-            if (!send_all(client_fd, response.data(), response.size())) {
-                close(client_fd);
-                return;
+            if (!client->send(response)) {
+                close_connection = true;
+                break;
             }
+        }
+        if (close_connection) {
+            break;
         }
     }
 
-    close(client_fd);
+    pub_sub->remove_client(client);
+    client->close();
 }
 
 }  // namespace
@@ -122,7 +105,8 @@ void handle_client(int client_fd,
 Server::Server(int port)
     : port(port), storage(std::make_shared<KeyValueStore>()),
       persistence(std::make_shared<AppendOnlyLog>()),
-      mutation_mutex(std::make_shared<std::mutex>()) {}
+      mutation_mutex(std::make_shared<std::mutex>()),
+      pub_sub(std::make_shared<PubSub>()) {}
 
 bool Server::start() {
     if (!persistence->replay(*storage)) {
@@ -175,13 +159,14 @@ bool Server::start() {
             return false;
         }
 
+        auto client = std::make_shared<ClientConnection>(client_fd);
         try {
-            std::thread(handle_client, client_fd, storage, persistence,
-                        mutation_mutex).detach();
+            std::thread(handle_client, client, storage, persistence,
+                        mutation_mutex, pub_sub).detach();
         } catch (const std::system_error& error) {
             std::cerr << "Failed to start client thread: "
                       << error.what() << std::endl;
-            close(client_fd);
+            client->close();
         }
     }
 }

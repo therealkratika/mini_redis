@@ -5,6 +5,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <utility>
 
 namespace {
 
@@ -45,9 +46,11 @@ bool parse_integer(const std::string& text, std::int64_t& value) {
 
 CommandHandler::CommandHandler(KeyValueStore& storage,
                                AppendOnlyLog& persistence,
-                               std::mutex& mutation_mutex)
+                               std::mutex& mutation_mutex, PubSub& pub_sub,
+                               std::shared_ptr<ClientConnection> client)
     : storage(storage), persistence(persistence),
-      mutation_mutex(mutation_mutex) {}
+      mutation_mutex(mutation_mutex), pub_sub(pub_sub),
+      client(std::move(client)) {}
 
 std::string CommandHandler::handle(
     const std::vector<std::string>& arguments) {
@@ -64,6 +67,29 @@ std::string CommandHandler::handle(
             return bulk_string(arguments[1]);
         }
         return wrong_argument_count(arguments[0]);
+    }
+
+    if (command == "SUBSCRIBE") {
+        if (arguments.size() < 2) {
+            return wrong_argument_count(arguments[0]);
+        }
+
+        for (std::size_t i = 1; i < arguments.size(); ++i) {
+            std::size_t count = 0;
+            if (!pub_sub.subscribe(arguments[i], client, count)) {
+                return "-ERR subscriber connection closed\r\n";
+            }
+        }
+        return {};
+    }
+
+    if (command == "PUBLISH") {
+        if (arguments.size() != 3) {
+            return wrong_argument_count(arguments[0]);
+        }
+        const std::size_t receivers =
+            pub_sub.publish(arguments[1], arguments[2]);
+        return integer_reply(static_cast<std::int64_t>(receivers));
     }
 
     if (command == "SET") {
