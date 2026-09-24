@@ -4,6 +4,7 @@
 #include "key_value_store.h"
 #include "resp_parser.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -14,6 +15,7 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 namespace {
 
@@ -177,7 +179,10 @@ bool Replication::become_replica(const std::string& host,
 
     replica_mode.store(true);
     try {
-        std::thread(&Replication::receive_replication, this, upstream).detach();
+        auto self = shared_from_this();
+        std::thread([self, upstream] {
+            self->receive_replication(upstream);
+        }).detach();
     } catch (const std::system_error& exception) {
         replica_mode.store(false);
         error = std::string("cannot start replication thread: ") +
@@ -250,6 +255,7 @@ void Replication::receive_replication(
         }
 
         pending.append(buffer, static_cast<std::size_t>(received));
+        bool invalid = false;
         while (!pending.empty()) {
             std::vector<std::string> arguments;
             std::size_t consumed = 0;
@@ -262,13 +268,13 @@ void Replication::receive_replication(
                 !apply_replicated(arguments)) {
                 std::cerr << "Invalid command received from primary"
                           << std::endl;
-                pending.clear();
+                invalid = true;
                 break;
             }
             pending.erase(0, consumed);
         }
-        if (pending.empty() && received > 0) {
-            continue;
+        if (invalid) {
+            break;
         }
     }
 

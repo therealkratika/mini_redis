@@ -4,6 +4,7 @@
 #include "command_handler.h"
 #include "pub_sub.h"
 #include "resp_parser.h"
+#include "replication.h"
 
 #include <cerrno>
 #include <cstdint>
@@ -23,13 +24,15 @@ void handle_client(const std::shared_ptr<ClientConnection>& client,
                    const std::shared_ptr<KeyValueStore>& storage,
                    const std::shared_ptr<AppendOnlyLog>& persistence,
                    const std::shared_ptr<std::mutex>& mutation_mutex,
-                   const std::shared_ptr<PubSub>& pub_sub) {
+                   const std::shared_ptr<PubSub>& pub_sub,
+                   const std::shared_ptr<Replication>& replication) {
 #if defined(SO_NOSIGPIPE) && !defined(MSG_NOSIGNAL)
     int no_sigpipe = 1;
     if (setsockopt(client->socket_fd(), SOL_SOCKET, SO_NOSIGPIPE,
                    &no_sigpipe, sizeof(no_sigpipe)) == -1) {
         perror("setsockopt");
         pub_sub->remove_client(client);
+        replication->remove_replica(client);
         client->close();
         return;
     }
@@ -38,6 +41,7 @@ void handle_client(const std::shared_ptr<ClientConnection>& client,
     constexpr char greeting[] = "Hello from MiniRedis!\r\n";
     if (!client->send(greeting)) {
         pub_sub->remove_client(client);
+        replication->remove_replica(client);
         client->close();
         return;
     }
@@ -45,7 +49,7 @@ void handle_client(const std::shared_ptr<ClientConnection>& client,
     char buffer[1024];
     std::string pending;
     CommandHandler command_handler(*storage, *persistence, *mutation_mutex,
-                                   *pub_sub, client);
+                                   *pub_sub, *replication, client);
     while (true) {
         const ssize_t received =
             recv(client->socket_fd(), buffer, sizeof(buffer), 0);
@@ -97,6 +101,7 @@ void handle_client(const std::shared_ptr<ClientConnection>& client,
     }
 
     pub_sub->remove_client(client);
+    replication->remove_replica(client);
     client->close();
 }
 
@@ -106,7 +111,9 @@ Server::Server(int port)
     : port(port), storage(std::make_shared<KeyValueStore>()),
       persistence(std::make_shared<AppendOnlyLog>()),
       mutation_mutex(std::make_shared<std::mutex>()),
-      pub_sub(std::make_shared<PubSub>()) {}
+      pub_sub(std::make_shared<PubSub>()),
+      replication(std::make_shared<Replication>(
+          storage, persistence, mutation_mutex)) {}
 
 bool Server::start() {
     if (!persistence->replay(*storage)) {
@@ -162,7 +169,7 @@ bool Server::start() {
         auto client = std::make_shared<ClientConnection>(client_fd);
         try {
             std::thread(handle_client, client, storage, persistence,
-                        mutation_mutex, pub_sub).detach();
+                        mutation_mutex, pub_sub, replication).detach();
         } catch (const std::system_error& error) {
             std::cerr << "Failed to start client thread: "
                       << error.what() << std::endl;

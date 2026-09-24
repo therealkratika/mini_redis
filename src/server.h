@@ -7,6 +7,7 @@
 class AppendOnlyLog;
 class KeyValueStore;
 class PubSub;
+class Replication;
 
 class Server {
 public:
@@ -19,6 +20,7 @@ private:
     std::shared_ptr<AppendOnlyLog> persistence;
     std::shared_ptr<std::mutex> mutation_mutex;
     std::shared_ptr<PubSub> pub_sub;
+    std::shared_ptr<Replication> replication;
 };
 
 #endif

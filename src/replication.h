@@ -13,7 +13,7 @@
 class AppendOnlyLog;
 class KeyValueStore;
 
-class Replication {
+class Replication : public std::enable_shared_from_this<Replication> {
 public:
     Replication(std::shared_ptr<KeyValueStore> storage,
                 std::shared_ptr<AppendOnlyLog> persistence,

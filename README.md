@@ -7,3 +7,10 @@ expiration is stored as an absolute deadline so downtime counts toward the TTL.
 
 Pub/Sub is available with `SUBSCRIBE channel` and `PUBLISH channel message`.
 Messages are sent to all connected subscribers using RESP message frames.
+
+For educational primary-replica replication, start the primary with
+`./miniredis 6380` and the replica with `./miniredis 6381`, then send
+`REPLICAOF 127.0.0.1 6380` to the replica. The replica applies and persists
+subsequent `SET`, `DEL`, and `EXPIRE` mutations from the primary, and rejects
+local writes while connected. This simple streaming setup does not perform an
+initial snapshot or automatically reconnect after the primary disconnects.

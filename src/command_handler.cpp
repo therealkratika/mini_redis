@@ -47,10 +47,11 @@ bool parse_integer(const std::string& text, std::int64_t& value) {
 CommandHandler::CommandHandler(KeyValueStore& storage,
                                AppendOnlyLog& persistence,
                                std::mutex& mutation_mutex, PubSub& pub_sub,
+                               Replication& replication,
                                std::shared_ptr<ClientConnection> client)
     : storage(storage), persistence(persistence),
       mutation_mutex(mutation_mutex), pub_sub(pub_sub),
-      client(std::move(client)) {}
+      replication(replication), client(std::move(client)) {}
 
 std::string CommandHandler::handle(
     const std::vector<std::string>& arguments) {
@@ -58,7 +59,37 @@ std::string CommandHandler::handle(
         return "-ERR empty command\r\n";
     }
 
+    if (replication.is_replica_connection(client)) {
+        return replication.apply_replicated(arguments)
+            ? std::string{}
+            : "-ERR invalid replicated command\r\n";
+    }
+
     const std::string command = uppercase(arguments[0]);
+    if (command == "REPLICA") {
+        if (arguments.size() != 1) {
+            return wrong_argument_count(arguments[0]);
+        }
+        return replication.register_replica(client)
+            ? std::string{}
+            : "-ERR replication handshake failed\r\n";
+    }
+
+    if (command == "REPLICAOF") {
+        if (arguments.size() != 3) {
+            return wrong_argument_count(arguments[0]);
+        }
+        std::int64_t port = 0;
+        if (!parse_integer(arguments[2], port) || port < 1 || port > 65535) {
+            return "-ERR invalid primary port\r\n";
+        }
+        std::string error;
+        if (!replication.become_replica(arguments[1], arguments[2], error)) {
+            return "-ERR " + error + "\r\n";
+        }
+        return "+OK\r\n";
+    }
+
     if (command == "PING") {
         if (arguments.size() == 1) {
             return "+PONG\r\n";
@@ -96,11 +127,15 @@ std::string CommandHandler::handle(
         if (arguments.size() != 3) {
             return wrong_argument_count(arguments[0]);
         }
+        if (replication.is_replica()) {
+            return "-READONLY replica accepts writes only from its primary\r\n";
+        }
         std::lock_guard<std::mutex> lock(mutation_mutex);
         if (!persistence.append({"SET", arguments[1], arguments[2]})) {
             return "-ERR persistence failure\r\n";
         }
         storage.set(arguments[1], arguments[2]);
+        replication.forward({"SET", arguments[1], arguments[2]});
         return "+OK\r\n";
     }
 
@@ -116,6 +151,9 @@ std::string CommandHandler::handle(
         if (arguments.size() < 2) {
             return wrong_argument_count(arguments[0]);
         }
+        if (replication.is_replica()) {
+            return "-READONLY replica accepts writes only from its primary\r\n";
+        }
         std::lock_guard<std::mutex> lock(mutation_mutex);
         std::vector<std::string> logged_arguments{"DEL"};
         logged_arguments.insert(logged_arguments.end(), arguments.begin() + 1,
@@ -127,6 +165,7 @@ std::string CommandHandler::handle(
         for (std::size_t i = 1; i < arguments.size(); ++i) {
             deleted += storage.del(arguments[i]);
         }
+        replication.forward(logged_arguments);
         return integer_reply(static_cast<std::int64_t>(deleted));
     }
 
@@ -140,6 +179,9 @@ std::string CommandHandler::handle(
             return "-ERR value is not an integer or out of range\r\n";
         }
 
+        if (replication.is_replica()) {
+            return "-READONLY replica accepts writes only from its primary\r\n";
+        }
         std::lock_guard<std::mutex> lock(mutation_mutex);
         if (!storage.exists(arguments[1])) {
             return integer_reply(0);
@@ -162,7 +204,10 @@ std::string CommandHandler::handle(
                 {"EXPIREAT", arguments[1], std::to_string(expiry_ms)})) {
             return "-ERR persistence failure\r\n";
         }
+        const std::vector<std::string> replication_command{
+            "EXPIREAT", arguments[1], std::to_string(expiry_ms)};
         storage.expire_at(arguments[1], expiry);
+        replication.forward(replication_command);
         return integer_reply(1);
     }
 

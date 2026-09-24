@@ -5,6 +5,7 @@
 #include "client_connection.h"
 #include "key_value_store.h"
 #include "pub_sub.h"
+#include "replication.h"
 
 #include <memory>
 #include <mutex>
@@ -15,6 +16,7 @@ class CommandHandler {
 public:
     CommandHandler(KeyValueStore& storage, AppendOnlyLog& persistence,
                    std::mutex& mutation_mutex, PubSub& pub_sub,
+                   Replication& replication,
                    std::shared_ptr<ClientConnection> client);
     std::string handle(const std::vector<std::string>& arguments);
 
@@ -23,6 +25,7 @@ private:
     AppendOnlyLog& persistence;
     std::mutex& mutation_mutex;
     PubSub& pub_sub;
+    Replication& replication;
     std::shared_ptr<ClientConnection> client;
 };
 
