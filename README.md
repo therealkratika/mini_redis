@@ -14,3 +14,13 @@ For educational primary-replica replication, start the primary with
 subsequent `SET`, `DEL`, and `EXPIRE` mutations from the primary, and rejects
 local writes while connected. This simple streaming setup does not perform an
 initial snapshot or automatically reconnect after the primary disconnects.
+
+Build both programs with `make`. Run `./miniredis-cli` to connect to
+`localhost:6380` and enter RESP commands interactively. `PUBLISH` accepts a
+message containing spaces. The client supports `SET`, `GET`, `DEL`, `EXPIRE`,
+`TTL`, `SUBSCRIBE`, and `PUBLISH`; use `QUIT` or Ctrl-D to close the client.
+
+Run storage, command, TTL, persistence, Pub/Sub, and replication unit coverage
+with `make test`. Run the separate TCP integration suite with
+`make test-network`; it starts temporary primary and replica servers on
+available local ports.

@@ -2,6 +2,7 @@
 #define KEY_VALUE_STORE_H
 
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -14,6 +15,7 @@ public:
     std::optional<std::string> get(const std::string& key);
     bool del(const std::string& key);
     bool exists(const std::string& key);
+    std::int64_t ttl_seconds(const std::string& key);
     bool expire_at(const std::string& key,
                    std::chrono::system_clock::time_point expires_at);
     void clear();

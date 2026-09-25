@@ -147,6 +147,13 @@ std::string CommandHandler::handle(
         return value ? bulk_string(*value) : "$-1\r\n";
     }
 
+    if (command == "TTL") {
+        if (arguments.size() != 2) {
+            return wrong_argument_count(arguments[0]);
+        }
+        return integer_reply(storage.ttl_seconds(arguments[1]));
+    }
+
     if (command == "DEL") {
         if (arguments.size() < 2) {
             return wrong_argument_count(arguments[0]);

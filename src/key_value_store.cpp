@@ -40,6 +40,19 @@ bool KeyValueStore::exists(const std::string& key) {
     return entry != values.end() && !expire_if_needed(entry);
 }
 
+std::int64_t KeyValueStore::ttl_seconds(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto entry = values.find(key);
+    if (entry == values.end() || expire_if_needed(entry)) {
+        return -2;
+    }
+    if (!entry->second.expires_at) {
+        return -1;
+    }
+    const auto remaining = *entry->second.expires_at - Clock::now();
+    return std::chrono::duration_cast<std::chrono::seconds>(remaining).count();
+}
+
 bool KeyValueStore::expire_at(
     const std::string& key,
     std::chrono::system_clock::time_point expires_at) {
