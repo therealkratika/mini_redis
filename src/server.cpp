@@ -61,6 +61,11 @@ void handle_client(const std::shared_ptr<ClientConnection>& client,
             break;
         }
         if (received == 0) {
+            if (!pending.empty()) {
+                constexpr char error[] =
+                    "-ERR Protocol error: incomplete RESP request\r\n";
+                client->send(error);
+            }
             std::cout << "Client disconnected" << std::endl;
             break;
         }
@@ -76,7 +81,16 @@ void handle_client(const std::shared_ptr<ClientConnection>& client,
                 break;
             }
             if (result == RespParseResult::Invalid) {
-                constexpr char error[] = "-ERR invalid RESP request\r\n";
+                constexpr char error[] =
+                    "-ERR Protocol error: invalid RESP request\r\n";
+                client->send(error);
+                close_connection = true;
+                break;
+            }
+            if (result == RespParseResult::Incomplete &&
+                pending.size() > 64 * 1024 * 1024) {
+                constexpr char error[] =
+                    "-ERR Protocol error: request exceeds maximum size\r\n";
                 client->send(error);
                 close_connection = true;
                 break;

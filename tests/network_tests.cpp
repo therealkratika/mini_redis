@@ -269,6 +269,69 @@ void test_tcp_commands(int port) {
     check(command(client, {"TTL", "ttl-key"}) == ":1\r\n" ||
               command(client, {"TTL", "ttl-key"}) == ":0\r\n",
           "TCP TTL for expiring key");
+    check(command(client, {"NO-SUCH-COMMAND"}) ==
+              "-ERR unknown command\r\n",
+          "TCP unknown command error");
+    check(command(client, {"SET", "missing-value"}) ==
+              "-ERR wrong number of arguments for 'set' command\r\n",
+          "TCP incorrect argument count error");
+    check(command(client, {"GET"}) ==
+              "-ERR wrong number of arguments for 'get' command\r\n",
+          "TCP GET argument count error");
+    check(command(client, {"EXPIRE", "ttl-key", "not-a-number"}) ==
+              "-ERR value is not an integer or out of range\r\n",
+          "TCP invalid TTL error");
+    close(client);
+
+    const int malformed = connect_client(port);
+    check(malformed != -1, "connect malformed-request client");
+    check(send_all(malformed, "*x\r\n"), "send malformed RESP request");
+    std::string malformed_response;
+    check(read_frame(malformed, malformed_response) &&
+              malformed_response ==
+                  "-ERR Protocol error: invalid RESP request\r\n",
+          "malformed RESP gets protocol error response");
+    close(malformed);
+
+    const int truncated = connect_client(port);
+    check(truncated != -1, "connect truncated-request client");
+    check(send_all(truncated, "*2\r\n$3\r\nGET\r\n$"), "send partial RESP");
+    shutdown(truncated, SHUT_WR);
+    std::string truncated_response;
+    check(read_frame(truncated, truncated_response) &&
+              truncated_response ==
+                  "-ERR Protocol error: incomplete RESP request\r\n",
+          "truncated RESP gets protocol error response");
+    close(truncated);
+
+    const int disconnected = connect_client(port);
+    check(disconnected != -1, "connect client that disconnects early");
+    close(disconnected);
+    const int after_disconnect = connect_client(port);
+    check(after_disconnect != -1 &&
+              command(after_disconnect, {"PING"}) == "+PONG\r\n",
+          "server remains healthy after client disconnect");
+    close(after_disconnect);
+}
+
+void test_persistence_error(int port,
+                            const std::filesystem::path& directory) {
+    const auto log_path = directory / "appendonly.aof";
+    const auto backup_path = directory / "appendonly.saved";
+    if (std::filesystem::exists(log_path)) {
+        std::filesystem::rename(log_path, backup_path);
+    }
+    std::filesystem::create_directory(log_path);
+
+    const int client = connect_client(port);
+    check(client != -1, "connect for persistence error test");
+    check(command(client, {"SET", "must-not-write", "value"}) ==
+              "-ERR persistence failure\r\n",
+          "TCP persistence failure returns Redis error");
+    check(command(client, {"GET", "must-not-write"}) == "$-1\r\n",
+          "failed persistent mutation is not applied");
+    check(command(client, {"PING"}) == "+PONG\r\n",
+          "server survives persistence error");
     close(client);
 }
 
@@ -377,6 +440,7 @@ int main() {
         test_tcp_commands(primary_port);
         test_pub_sub(primary_port);
         test_replication(primary_port, replica_port);
+        test_persistence_error(primary_port, primary_directory);
     }
 
     std::filesystem::remove_all(root);

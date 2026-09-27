@@ -6,6 +6,9 @@
 
 namespace {
 
+constexpr std::size_t max_command_arguments = 1024;
+constexpr std::size_t max_command_bytes = 64 * 1024 * 1024;
+
 RespParseResult parse_length(const std::string& input, std::size_t& position,
                              std::size_t& length) {
     const std::size_t line_end = input.find("\r\n", position);
@@ -47,6 +50,9 @@ RespParseResult parse_resp_command(const std::string& input,
     if (result != RespParseResult::Complete) {
         return result;
     }
+    if (argument_count > max_command_arguments) {
+        return RespParseResult::Invalid;
+    }
 
     std::vector<std::string> parsed_arguments;
     for (std::size_t i = 0; i < argument_count; ++i) {
@@ -63,11 +69,16 @@ RespParseResult parse_resp_command(const std::string& input,
         if (result != RespParseResult::Complete) {
             return result;
         }
-
+        const std::size_t bytes_before_bulk = position - offset;
+        if (bytes_before_bulk > max_command_bytes ||
+            bulk_length > max_command_bytes - bytes_before_bulk) {
+            return RespParseResult::Invalid;
+        }
         if (bulk_length > input.size() - position ||
             input.size() - position - bulk_length < 2) {
             return RespParseResult::Incomplete;
         }
+
         if (input[position + bulk_length] != '\r' ||
             input[position + bulk_length + 1] != '\n') {
             return RespParseResult::Invalid;
@@ -75,6 +86,9 @@ RespParseResult parse_resp_command(const std::string& input,
 
         parsed_arguments.emplace_back(input.data() + position, bulk_length);
         position += bulk_length + 2;
+        if (position - offset > max_command_bytes) {
+            return RespParseResult::Invalid;
+        }
     }
 
     arguments = std::move(parsed_arguments);

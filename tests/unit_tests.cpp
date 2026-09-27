@@ -4,6 +4,7 @@
 #include "key_value_store.h"
 #include "pub_sub.h"
 #include "replication.h"
+#include "resp_parser.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -67,6 +68,31 @@ void test_storage() {
           "clear removes all keys");
 }
 
+void test_resp_parser() {
+    std::vector<std::string> arguments;
+    std::size_t consumed = 0;
+    check(parse_resp_command("*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n",
+                             arguments, consumed) ==
+              RespParseResult::Complete,
+          "parse complete RESP command");
+    check(arguments == std::vector<std::string>{"GET", "key"},
+          "parsed RESP command arguments");
+    check(parse_resp_command("*2\r\n$3\r\nGET\r\n$",
+                             arguments, consumed) ==
+              RespParseResult::Incomplete,
+          "incomplete RESP request waits for more data");
+    check(parse_resp_command("*x\r\n", arguments, consumed) ==
+              RespParseResult::Invalid,
+          "reject malformed array length");
+    check(parse_resp_command("*1\r\n$-1\r\n", arguments, consumed) ==
+              RespParseResult::Invalid,
+          "reject unsupported null bulk argument");
+    check(parse_resp_command("*1\r\n$999999999\r\n",
+                             arguments, consumed) ==
+              RespParseResult::Invalid,
+          "reject bulk strings above parser limit");
+}
+
 void test_commands_and_persistence() {
     const std::string path =
         "/tmp/miniredis-unit-aof-" + std::to_string(getpid());
@@ -102,6 +128,23 @@ void test_commands_and_persistence() {
           "DEL returns number of keys removed");
     check(handler.handle({"GET", "name"}) == "$-1\r\n",
           "GET returns null bulk string after delete");
+    check(handler.handle({"UNKNOWN"}) == "-ERR unknown command\r\n",
+          "unknown command returns Redis error");
+    check(handler.handle({"SET", "only-key"}) ==
+              "-ERR wrong number of arguments for 'set' command\r\n",
+          "SET argument count error");
+    check(handler.handle({"EXPIRE", "name", "invalid"}) ==
+              "-ERR value is not an integer or out of range\r\n",
+          "invalid TTL returns Redis error");
+
+    AppendOnlyLog failed_log(path + "/missing/aof");
+    CommandHandler failed_handler(storage, failed_log, *mutation_mutex,
+                                  pub_sub, *replication, client);
+    check(failed_handler.handle({"SET", "failure", "value"}) ==
+              "-ERR persistence failure\r\n",
+          "persistence write failure returns Redis error");
+    check(!storage.exists("failure"),
+          "failed persistent SET leaves storage unchanged");
 
     check(log.append({"SET", "persist", "recovered"}),
           "append persistence SET record");
@@ -186,6 +229,7 @@ void test_replication_apply() {
 }  // namespace
 
 int main() {
+    test_resp_parser();
     test_storage();
     test_commands_and_persistence();
     test_pub_sub();

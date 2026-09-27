@@ -23,4 +23,7 @@ message containing spaces. The client supports `SET`, `GET`, `DEL`, `EXPIRE`,
 Run storage, command, TTL, persistence, Pub/Sub, and replication unit coverage
 with `make test`. Run the separate TCP integration suite with
 `make test-network`; it starts temporary primary and replica servers on
-available local ports.
+available local ports. Malformed or incomplete RESP requests receive a
+protocol error and close only that client connection. Commands with invalid
+arguments and persistence write failures return RESP error replies while the
+server continues serving other clients.
