@@ -20,6 +20,11 @@ Build both programs with `make`. Run `./miniredis-cli` to connect to
 message containing spaces. The client supports `SET`, `GET`, `DEL`, `EXPIRE`,
 `TTL`, `SUBSCRIBE`, and `PUBLISH`; use `QUIT` or Ctrl-D to close the client.
 
+Run `./miniredis-benchmark` against a running server to measure SET and GET
+throughput and average request latency. Options include `--host`, `--port`,
+`--requests`, and `--clients`; for example:
+`./miniredis-benchmark --requests 100000 --clients 8`.
+
 Run storage, command, TTL, persistence, Pub/Sub, and replication unit coverage
 with `make test`. Run the separate TCP integration suite with
 `make test-network`; it starts temporary primary and replica servers on

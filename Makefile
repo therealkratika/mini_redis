@@ -3,6 +3,7 @@ CXXFLAGS = -std=c++17 -Wall -Wextra -pthread
 
 TARGET = miniredis
 CLI_TARGET = miniredis-cli
+BENCHMARK_TARGET = miniredis-benchmark
 
 CORE_SRC = src/server.cpp src/resp_parser.cpp src/command_handler.cpp \
 	src/key_value_store.cpp src/append_only_log.cpp src/client_connection.cpp \
@@ -12,7 +13,7 @@ UNIT_SRC = src/resp_parser.cpp src/command_handler.cpp src/key_value_store.cpp \
 	src/append_only_log.cpp src/client_connection.cpp src/pub_sub.cpp \
 	src/replication.cpp
 
-all: $(TARGET) $(CLI_TARGET)
+all: $(TARGET) $(CLI_TARGET) $(BENCHMARK_TARGET)
 
 $(TARGET): src/main.cpp $(CORE_SRC) src/server.h src/resp_parser.h src/command_handler.h \
 	src/key_value_store.h src/append_only_log.h src/client_connection.h \
@@ -21,6 +22,9 @@ $(TARGET): src/main.cpp $(CORE_SRC) src/server.h src/resp_parser.h src/command_h
 
 $(CLI_TARGET): src/cli_main.cpp
 	$(CXX) $(CXXFLAGS) src/cli_main.cpp -o $(CLI_TARGET)
+
+$(BENCHMARK_TARGET): src/benchmark.cpp
+	$(CXX) $(CXXFLAGS) src/benchmark.cpp -o $(BENCHMARK_TARGET)
 
 unit_tests: tests/unit_tests.cpp $(UNIT_SRC)
 	$(CXX) $(CXXFLAGS) -Isrc tests/unit_tests.cpp $(UNIT_SRC) -o unit_tests
@@ -36,4 +40,4 @@ test-network: network_tests
 
 .PHONY: all clean test test-network
 clean:
-	rm -f $(TARGET) $(CLI_TARGET) unit_tests network_tests
+	rm -f $(TARGET) $(CLI_TARGET) $(BENCHMARK_TARGET) unit_tests network_tests
