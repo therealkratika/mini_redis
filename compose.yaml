@@ -1,0 +1,12 @@
+services:
+  miniredis:
+    build:
+      context: .
+    ports:
+      - "6380:6380"
+    volumes:
+      - miniredis-data:/data
+    restart: unless-stopped
+
+volumes:
+  miniredis-data:

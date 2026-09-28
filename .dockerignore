@@ -1,0 +1,8 @@
+.git
+.gitignore
+appendonly.aof
+miniredis
+miniredis-cli
+miniredis-benchmark
+unit_tests
+network_tests
